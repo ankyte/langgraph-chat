@@ -1,9 +1,11 @@
 import streamlit as st
-import requests
 import uuid
-import json
-import time
+from chatgraph import Graph
 from typing import Iterator, Dict, List, Tuple, Any
+import uuid
+from langchain_core.messages import HumanMessage
+
+graph = Graph().get()
 
 APP_NAME = "FolioPilot"
 
@@ -28,9 +30,6 @@ if "current_chat_id" not in st.session_state:
         "title": "New Chat"
     }
 
-# API endpoint
-BASE_URL = "http://127.0.0.1:8000"
-
 # Function to create a new chat
 def create_new_chat():
     new_chat_id = str(uuid.uuid4())
@@ -53,48 +52,35 @@ def generate_chat_title(message):
         return message[:30] + "..."
     return message
 
-# Function to stream API response
-def stream_api_response(url) -> Iterator[Dict[str, Any]]:
-    """
-    Stream API response and handle different event types.
-    Returns a generator that yields content chunks and event metadata.
-    """
+def stream_response(response) -> Iterator[Dict[str, Any]]:
     full_response = ""
     checkpoint_id = None
-    
-    with requests.get(url, stream=True) as response:
-        response.raise_for_status()
         
-        for line in response.iter_lines():
-            if line:
-                line_text = line.decode('utf-8')
-                if line_text.startswith("data: "):
-                    data_str = line_text[6:]  # Remove "data: " prefix
-                    try:
-                        data = json.loads(data_str)
-                        event_type = data.get("type", "")
-                        
-                        # Handle different event types
-                        if event_type == "checkpoint" and "checkpoint_id" in data:
-                            checkpoint_id = data["checkpoint_id"]
-                            
-                        elif event_type == "content" and "content" in data:
-                            content = data["content"]
-                            full_response += content
-                            yield {"type": "content", "content": content}
-                            
-                        elif event_type == "search_start" and "query" in data:
-                            yield {"type": "search_start", "query": data["query"]}
-                            
-                        elif event_type == "search_results" and "urls" in data:
-                            yield {"type": "search_results", "urls": data["urls"]}
-                            
-                        elif event_type == "end":
-                            yield {"type": "end"}
-                            break
-                            
-                    except json.JSONDecodeError:
-                        pass
+    for line in response.iter_lines():
+        if line:
+            line_text = line.decode('utf-8')
+            if line_text.startswith("data: "):
+                data_str = line_text[6:]  # Remove "data: " prefix
+                event_type = data.get("type", "")
+                
+                # Handle different event types
+                if event_type == "checkpoint" and "checkpoint_id" in data:
+                    checkpoint_id = data["checkpoint_id"]
+                    
+                elif event_type == "content" and "content" in data:
+                    content = data["content"]
+                    full_response += content
+                    yield {"type": "content", "content": content}
+                    
+                elif event_type == "search_start" and "query" in data:
+                    yield {"type": "search_start", "query": data["query"]}
+                    
+                elif event_type == "search_results" and "urls" in data:
+                    yield {"type": "search_results", "urls": data["urls"]}
+                    
+                elif event_type == "end":
+                    yield {"type": "end"}
+                    break
     
     # Update the checkpoint_id in session state
     current_chat = st.session_state.chat_sessions[st.session_state.current_chat_id]
@@ -141,6 +127,51 @@ for message in current_chat["messages"]:
     with st.chat_message(role):
         st.write(content)
 
+async def generate_chat_responses(prompt:str, checkpoint_id: str):
+    is_new_conversation = checkpoint_id is None
+    if is_new_conversation:
+        # Generate new checkpoint ID for first message in conversation
+        new_checkpoint_id = str(uuid.uuid4())
+
+        config = {
+            "configurable": {
+                "thread_id": new_checkpoint_id
+            }
+        }
+        
+        # Initialize with first message
+        events = graph.astream_events(
+            {"messages": [HumanMessage(content=prompt)]},
+            version="v2",
+            config=config
+        )
+        
+        async for event in events:
+            event_type = event["event"]
+            if event_type == "on_chat_model_stream":
+                yield event["data"]["chunk"]
+                
+            elif event_type == "on_chat_model_end":
+                # Check if there are tool calls for search
+                tool_calls = event["data"]["output"].tool_calls if hasattr(event["data"]["output"], "tool_calls") else []
+                search_calls = [call for call in tool_calls if call["name"] == "tavily_search_results_json"]
+                
+                if search_calls:
+                    search_query = search_calls[0]["args"].get("query", "")
+                    yield search_query
+                    
+            elif event_type == "on_tool_end" and event["name"] == "tavily_search_results_json":
+                output = event["data"]["output"] # Search completed - send results or error
+                
+                if isinstance(output, list):
+                    urls = []
+                    for item in output:
+                        if isinstance(item, dict) and "url" in item:
+                            urls.append(item["url"])
+                    
+                    yield urls
+    
+
 # Process user input
 if prompt := st.chat_input("Type your message here..."):
     # Add user message to chat
@@ -156,15 +187,11 @@ if prompt := st.chat_input("Type your message here..."):
     
     # Prepare the message and checkpoint_id
     checkpoint_id = current_chat["checkpoint_id"]
-    encoded_message = prompt.replace(" ", "%20")
     
     try:
-        # Construct the API URL with parameters
-        if checkpoint_id:
-            url = f"{BASE_URL}/chat_stream/{encoded_message}?checkpoint_id={checkpoint_id}"
-        else:
-            url = f"{BASE_URL}/chat_stream/{encoded_message}"
-        
+        # Use async for to iterate over the async generator
+        response = generate_chat_responses(prompt, checkpoint_id)
+
         # Create assistant message container for streaming
         with st.chat_message("assistant"):
             # Initialize variables for response tracking

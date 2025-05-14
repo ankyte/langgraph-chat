@@ -1,4 +1,4 @@
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import SystemMessage, ToolMessage
 from langchain_community.tools.tavily_search import TavilySearchResults
 from langgraph.graph import add_messages, StateGraph, END # add_message: to update graph state
 from langgraph.checkpoint.memory import MemorySaver
@@ -22,6 +22,9 @@ class State(TypedDict):
 # Defining Nodes
 
 async def model(state: State):
+    messages = state["messages"]
+    if isinstance(messages[-1], SystemMessage):
+        return state
     result = await llm_with_tools.ainvoke(state["messages"])
     return {
         "messages": [result], 
@@ -77,7 +80,8 @@ class Graph:
         graph_builder.add_edge("tool_node", "model")
 
         self.graph = graph_builder.compile(checkpointer=memory)
+
     
-    def get(self):
+    def get_graph(self):
         return self.graph
     
