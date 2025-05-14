@@ -1,5 +1,5 @@
 import streamlit as st
-from predictive_chat import suggest_followups
+from suggestions import suggest_followups
 
 # Session state initialization
 if "messages" not in st.session_state:

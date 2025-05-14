@@ -46,7 +46,7 @@ class DataTransformationInput(BaseModel):
 
 class DataTransformationTool(BaseTool):
     name: str = "data_transformation_tool"
-    description: str = "useful for when you are asked dataframe related questions or to perform manipulations on dataframe, user provides port and report date, use them to fetch dataframe"
+    description: str = "strictly use when you are asked to perform manipulations on dataframe, user provides port and report date, use them to fetch dataframe"
     args_schema: Optional[ArgsSchema] = DataTransformationInput
     return_direct: bool = True
 

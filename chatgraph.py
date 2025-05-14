@@ -72,7 +72,6 @@ async def tool_node(state):
                 tool_messages.append(tool_message)
             
         if tool_name == "data_transformation_tool":
-            print("DATA TRANSOFRM CHAIN")
             response = await data_query_tool.ainvoke(tool_args)
             tool_message = ToolMessage(
                 content=response,

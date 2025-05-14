@@ -6,6 +6,7 @@ from chatgraph import Graph
 from langchain_core.messages import HumanMessage, AIMessageChunk, ToolMessage
 from util import state_manager
 
+
 graph = Graph().get()
 
 APP_NAME = "FolioPilot"
@@ -40,6 +41,7 @@ def create_new_chat():
         "checkpoint_id": None,
         "title": "New Chat"
     }
+    st.session_state.input_mode = "initial"
     st.rerun()
 
 # Function to switch to existing chat
@@ -117,16 +119,53 @@ current_chat = st.session_state.chat_sessions[st.session_state.current_chat_id]
 # Display chat title
 st.header(current_chat["title"])
 
+if len(current_chat["messages"]) <= 1:
+    # Session state initialization
+    if "suggestions" not in st.session_state:
+        st.session_state.suggestions = []
+    if "input_mode" not in st.session_state:
+        st.session_state.input_mode = "initial"
+    if "followup_click_count" not in st.session_state:
+        st.session_state.followup_click_count = 0
+
+    st.write("Ask anything and everything about your portfolio")
+
+
+    # Function to fetch dynamic starter prompts
+    def fetch_dynamic_starter_prompts():
+        return [
+            "Show me the performance data of SEL-AGG.",
+            "What are the risk metrics of this fund?",
+            "Can you explain the fund attribution?",
+            "Compare returns of two funds over 5 years.",
+            "How has this fund performed vs the benchmark?"
+        ]
+
+    # Initial mode — show starter prompts and custom question input
+    if st.session_state.input_mode == "initial":
+        st.write("💡 Try one of these to get started:")
+        starter_prompts = fetch_dynamic_starter_prompts()
+        cols = st.columns(2)
+        for i, prompt in enumerate(starter_prompts):
+            if cols[i % 2].button(prompt):
+                # current_chat["messages"].append({"role": "user", "content": prompt})
+                st.session_state['suggested_prompt'] = prompt
+                # st.session_state.suggestions = suggest_followups(prompt)
+                st.session_state.input_mode = "chat"
+                st.rerun()
+                
 # Convert stored messages to Streamlit chat message format
 for message in current_chat["messages"]:
     role = message["role"]
     content = message["content"]
+    dataframes = message.get("dataframes", [])
     
     with st.chat_message(role):
         st.write(content)
+        for df in dataframes:
+            st.data_editor(df)
 
-# Process user input
-if prompt := st.chat_input("Type your message here..."):
+def run_llm(prompt):
     # Add user message to chat
     current_chat["messages"].append({"role": "user", "content": prompt})
     
@@ -153,9 +192,14 @@ if prompt := st.chat_input("Type your message here..."):
             
             # Get and process all events
             events = stream_response(prompt, checkpoint_id)
-            
+            dfs = list()
             for event in events:
                 event_type = event["event"]
+
+                # if 'dfs' not in st.session_state:
+                #     st.session_state.dfs = dict()
+                
+
                 if event_type == "on_chat_model_stream":
                     # Update the full response
                     chunk_content = serialise_ai_message_chunk(event["data"]["chunk"])
@@ -175,13 +219,11 @@ if prompt := st.chat_input("Type your message here..."):
                         search_status.update(label=f"Searching for: {search_query}", state="running")
                     if data_tool_calls:
                         data_id = str(repr(data_tool_calls[0]["args"]))
-                        st.data_editor(state_manager.get(data_id), use_container_width=True)
-                        
-                        # Signal that a search is starting
-                        # data_tool_query = data_tool_calls[0]["args"].get("query", "")
-                        # Create a status indicator for search
-                        # search_status = st.status(f"Searching for: {data_tool_query}", expanded=True)
-                        # search_status.update(label=f"Searching for: {search_query}", state="running")
+                        df = state_manager.get(data_id)
+                        # st.session_state.dfs[data_id] = df
+                        dfs.append(df)
+                        st.data_editor(df, use_container_width=True, key=uuid.uuid4())
+
                     
                 elif event_type == "on_tool_end" and search_status:
                     output = event["data"]["output"]
@@ -197,7 +239,16 @@ if prompt := st.chat_input("Type your message here..."):
                         search_status(urls)
                                 
             # Add assistant's complete response to chat history
-            current_chat["messages"].append({"role": "assistant", "content": full_response})
+            current_chat["messages"].append({"role": "assistant", "content": full_response, "dataframes": dfs})
             
     except Exception as e:
         st.error(f"Error: {str(e)}")
+
+# Process user input
+if prompt := st.chat_input("Type your message here..."):
+    run_llm(prompt)
+
+if "suggested_prompt" in st.session_state and st.session_state["suggested_prompt"]:
+    prompt = st.session_state["suggested_prompt"]
+    del st.session_state["suggested_prompt"]
+    run_llm(prompt)
