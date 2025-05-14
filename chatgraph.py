@@ -8,6 +8,7 @@ from langchain_openai import ChatOpenAI
 from dotenv import load_dotenv
 load_dotenv()
 
+
 model = ChatOpenAI(model="gpt-4.1-nano")
 search_tool = TavilySearchResults(max_results=1)
 tools = [search_tool]

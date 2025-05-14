@@ -6,6 +6,9 @@ from typing import Optional
 from chatgraph import Graph
 from uuid import uuid4
 import json
+import os
+
+os.environ['REQUESTS_CA_BUNDLE']='/your/cert'
 
 app = FastAPI()
 
