@@ -1,0 +1,47 @@
+from dotenv import load_dotenv
+from langchain_openai import ChatOpenAI
+
+# Load environment variables
+load_dotenv()
+
+
+def suggest_followups(user_query):
+    """
+    Use Together API-compatible GPT model to suggest follow-up questions for a financial chatbot.
+    """
+    prompt = f"""
+    The user asked: "{user_query}"
+
+    Based on this, suggest 3 intelligent follow-up questions related to financial data,
+    fund performance, attribution, or risk.
+
+    Only return the questions in a bullet list.
+    """
+    llm = ChatOpenAI(
+        model = "gpt-4.1-nano",
+        temperature=0.7,
+        max_tokens=100
+    )
+    response = llm.invoke(prompt)
+    # Process the response and filter out unwanted lines like "Here are three intelligent follow-up questions"
+    raw_lines = response.content.strip().split("\n")
+
+    # Only return lines that appear to be actual questions, removing introductory text
+    follow_up_questions = [
+        line.lstrip("•-1234567890. ").strip()  # Removes bullet points, numbers, etc.
+        for line in raw_lines
+        if "?" in line and len(line.strip()) > 5
+    ]
+    
+    return follow_up_questions
+
+
+
+
+
+
+
+
+
+
+

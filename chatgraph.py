@@ -1,16 +1,22 @@
-from langchain_core.messages import SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage, SystemMessage
 from langchain_community.tools.tavily_search import TavilySearchResults
 from langgraph.graph import add_messages, StateGraph, END # add_message: to update graph state
 from langgraph.checkpoint.memory import MemorySaver
 from typing import TypedDict, Annotated # to define state of graph
 from langchain_openai import ChatOpenAI
-
+from tools.data import DataFetchTool, DataTransformationTool
+from util import state_manager
 from dotenv import load_dotenv
 load_dotenv()
 
-model = ChatOpenAI(model="gpt-4.1-nano")
 search_tool = TavilySearchResults(max_results=1)
-tools = [search_tool]
+data_tool = DataFetchTool()
+data_query_tool = DataTransformationTool()
+tools = [search_tool, data_tool, data_query_tool]
+
+model = ChatOpenAI(model="gpt-4.1")
+
+
 memory = MemorySaver()
 llm_with_tools = model.bind_tools(tools=tools)
 
@@ -52,7 +58,29 @@ async def tool_node(state):
             )
             
             tool_messages.append(tool_message)
-    
+
+        if tool_name == "data_fetch_tool":
+                df = await data_tool.ainvoke(tool_args)
+                tool_message = ToolMessage(
+                    content=tool_args,
+                    tool_call_id=tool_id,
+                    name=tool_name
+                )
+                data_id = repr(tool_args)
+                state_manager.set(data_id, df)
+
+                tool_messages.append(tool_message)
+            
+        if tool_name == "data_transformation_tool":
+            print("DATA TRANSOFRM CHAIN")
+            response = await data_query_tool.ainvoke(tool_args)
+            tool_message = ToolMessage(
+                content=response,
+                tool_call_id=tool_id,
+                name=tool_name
+            )
+            tool_messages.append(tool_message)
+            
     return {"messages": tool_messages}
 
 # Router
@@ -80,8 +108,7 @@ class Graph:
         graph_builder.add_edge("tool_node", "model")
 
         self.graph = graph_builder.compile(checkpointer=memory)
-
     
-    def get_graph(self):
+    def get(self):
         return self.graph
     

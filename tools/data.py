@@ -8,10 +8,14 @@ from langchain_core.callbacks import (
 from langchain_core.tools import BaseTool
 from langchain_core.tools.base import ArgsSchema
 from pydantic import BaseModel, Field
+from langchain_experimental.agents.agent_toolkits import create_pandas_dataframe_agent
+from langchain_openai import ChatOpenAI
+from util import state_manager
+from .mocked_data import get_trades_data
 
 class DataInput(BaseModel):
-    a: str = Field(description="port")
-    b: datetime.date = Field(description="end_date")
+    port: str = Field(description="port")
+    report_date: datetime.date = Field(description="report_date")
 
 class DataFetchTool(BaseTool):
     name: str = "data_fetch_tool"
@@ -20,21 +24,59 @@ class DataFetchTool(BaseTool):
     return_direct: bool = True
 
     def _run(
-        self, a: str, b: datetime.date, run_manager: Optional[CallbackManagerForToolRun] = None
+        self, port: str, report_date: datetime.date, run_manager: Optional[CallbackManagerForToolRun] = None
     ) -> pd.DataFrame:
         """Use the tool."""
-        df = pd.DataFrame({
-            "a": [1,2,3,4,5,6],
-            "b": [b + datetime.timedelta(days=i) for i in range(6)]
-        })
-        
+        df = get_trades_data(port, report_date, 10)
         return df
 
     async def _arun(
         self,
-        a: str,
-        b: datetime.date,
+        port: str, report_date: datetime.date,
         run_manager: Optional[AsyncCallbackManagerForToolRun] = None,
     ) -> int:
         """Use the tool asynchronously."""
-        return self._run(a, b, run_manager=run_manager.get_sync())
+        return self._run(port, report_date, run_manager=run_manager.get_sync())
+    
+
+class DataTransformationInput(BaseModel):
+    port: str = Field(description="port")
+    report_date: datetime.date = Field(description="report date")
+    transformation_prompt: str = Field(description="user input text to perform data transformation")
+
+class DataTransformationTool(BaseTool):
+    name: str = "data_transformation_tool"
+    description: str = "useful for when you are asked dataframe related questions or to perform manipulations on dataframe, user provides port and report date, use them to fetch dataframe"
+    args_schema: Optional[ArgsSchema] = DataTransformationInput
+    return_direct: bool = True
+
+    def _run(
+        self, port: str, report_date: datetime.date, transformation_prompt: str, run_manager: Optional[CallbackManagerForToolRun] = None
+    ) -> pd.DataFrame:
+        print('function begins')
+        """Use the tool."""
+        data_id = repr({
+            'port': port,
+            'report_date': str(report_date)
+        })
+        print(data_id)
+        df = state_manager.get(data_id)
+        print(df)
+        agent = create_pandas_dataframe_agent(
+            ChatOpenAI(temperature=0, model="gpt-4.1-nano"),
+            df, verbose=True, 
+            allow_dangerous_code=True
+        )
+        response = agent.run(transformation_prompt)
+        print(response)
+        print('function end')
+
+        return response
+
+    async def _arun(
+        self, port: str, report_date: datetime.date, transformation_prompt: str,
+        run_manager: Optional[AsyncCallbackManagerForToolRun] = None,
+    ) -> int:
+        """Use the tool asynchronously."""
+        return self._run(port, report_date, transformation_prompt, run_manager=run_manager.get_sync())
+        
