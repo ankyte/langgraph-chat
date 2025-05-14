@@ -9,10 +9,7 @@ OPENAI_API_KEY=""
 TAVILY_API_KEY=""
 `
 
-To run server
-`
-python -m uvicorn app:app --reload
-`
+
 
 To run client
 `

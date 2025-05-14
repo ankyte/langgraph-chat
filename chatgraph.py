@@ -5,6 +5,9 @@ from langgraph.checkpoint.memory import MemorySaver
 from typing import TypedDict, Annotated # to define state of graph
 from langchain_openai import ChatOpenAI
 from tools.data import DataFetchTool, DataTransformationTool
+from tools.chart import ChartTool
+from tools.dashboard import DashboardTool
+from tools.report import ReportTool
 from util import state_manager
 from dotenv import load_dotenv
 load_dotenv()
@@ -12,7 +15,11 @@ load_dotenv()
 search_tool = TavilySearchResults(max_results=1)
 data_tool = DataFetchTool()
 data_query_tool = DataTransformationTool()
-tools = [search_tool, data_tool, data_query_tool]
+dashboard_tool = DashboardTool()
+chart_tool = ChartTool()
+report_tool = ReportTool()
+
+tools = [search_tool, data_tool, data_query_tool, chart_tool, dashboard_tool, report_tool]
 
 model = ChatOpenAI(model="gpt-4.1")
 
@@ -60,16 +67,16 @@ async def tool_node(state):
             tool_messages.append(tool_message)
 
         if tool_name == "data_fetch_tool":
-                df = await data_tool.ainvoke(tool_args)
-                tool_message = ToolMessage(
-                    content=tool_args,
-                    tool_call_id=tool_id,
-                    name=tool_name
-                )
-                data_id = repr(tool_args)
-                state_manager.set(data_id, df)
+            df = await data_tool.ainvoke(tool_args)
+            tool_message = ToolMessage(
+                content=tool_args,
+                tool_call_id=tool_id,
+                name=tool_name
+            )
+            data_id = repr(tool_args)
+            state_manager.set(data_id, df)
 
-                tool_messages.append(tool_message)
+            tool_messages.append(tool_message)
             
         if tool_name == "data_transformation_tool":
             response = await data_query_tool.ainvoke(tool_args)
@@ -79,7 +86,33 @@ async def tool_node(state):
                 name=tool_name
             )
             tool_messages.append(tool_message)
-            
+        
+        if tool_name == "chart_tool":
+            response = await chart_tool.ainvoke(tool_args)
+            tool_message = ToolMessage(
+                content = response,
+                tool_call_id=tool_id,
+                name=tool_name
+            )
+            tool_messages.append(tool_message)
+        
+        if tool_name == "dashboard_tool":
+            response = await dashboard_tool.ainvoke(tool_args)
+            tool_message = ToolMessage(
+                content = response,
+                tool_call_id=tool_id,
+                name=tool_name
+            )
+            tool_messages.append(tool_message)
+
+        if tool_name == "report_tool":
+            response = await dashboard_tool.ainvoke(tool_args)
+            tool_message = ToolMessage(
+                content = response,
+                tool_call_id=tool_id,
+                name=tool_name
+            )
+            tool_messages.append(tool_message)
     return {"messages": tool_messages}
 
 # Router

@@ -5,7 +5,8 @@ from typing import Iterator, Dict, Any
 from chatgraph import Graph
 from langchain_core.messages import HumanMessage, AIMessageChunk, ToolMessage
 from util import state_manager
-
+from tools.chart import generate_chart
+from st_ui.dashboard import dashboard_ui
 
 graph = Graph().get()
 
@@ -163,7 +164,7 @@ for message in current_chat["messages"]:
     with st.chat_message(role):
         st.write(content)
         for df in dataframes:
-            st.data_editor(df)
+            st.data_editor(df, key=uuid.uuid4())
 
 def run_llm(prompt):
     # Add user message to chat
@@ -212,18 +213,41 @@ def run_llm(prompt):
                     tool_calls = event["data"]["output"].tool_calls if hasattr(event["data"]["output"], "tool_calls") else []
                     tavily_search_calls = [call for call in tool_calls if call["name"] == "tavily_search_results_json"]
                     data_tool_calls = [call for call in tool_calls if call["name"] == "data_fetch_tool"]
+                    chart_tool_output = [call for call in tool_calls if call["name"] == "chart_tool"]
+                    dashboard_tool_output = [call for call in tool_calls if call["name"] == "dashboard_tool"]
+                    report_tool_output = [call for call in tool_calls if call["name"] == "report_tool"]
 
                     if tavily_search_calls:
                         search_query = tavily_search_calls[0]["args"].get("query", "")
                         search_status = st.status(f"Searching for: {search_query}", expanded=True)
                         search_status.update(label=f"Searching for: {search_query}", state="running")
-                    if data_tool_calls:
+                    elif data_tool_calls:
                         data_id = str(repr(data_tool_calls[0]["args"]))
                         df = state_manager.get(data_id)
                         # st.session_state.dfs[data_id] = df
                         dfs.append(df)
                         st.data_editor(df, use_container_width=True, key=uuid.uuid4())
+                    elif chart_tool_output:
+                        response = chart_tool_output[0]["args"]
+                        data_id = str(repr({
+                            "port": response["port"],
+                            "report_date": response["report_date"]
+                        }))
 
+                        df = state_manager.get(data_id)
+                        generate_chart(df, response['chart_type'])
+
+                    elif dashboard_tool_output:
+                        response = dashboard_tool_output[0]["args"]
+                        port = response["port"]
+                        st.session_state["dashboard_portfolio"] = port
+                        st.session_state['view_dashboard'] = st.button(f"Dashboard {port}")
+                        
+                    elif report_tool_output:
+                        response = report_tool_output[0]["args"]
+                        port = response["port"]
+                        st.session_state["report_tool_portfolio"] = port
+                        st.button(f"Download pdf report for {port}")
                     
                 elif event_type == "on_tool_end" and search_status:
                     output = event["data"]["output"]
@@ -235,14 +259,14 @@ def run_llm(prompt):
                                 urls.append(item["url"])
                         
                         search_status.update(label="Search completed", state="complete")
-                        search_status.write(f"Search results:")
-                        search_status(urls)
+                        # search_status(urls)
                                 
             # Add assistant's complete response to chat history
             current_chat["messages"].append({"role": "assistant", "content": full_response, "dataframes": dfs})
             
     except Exception as e:
-        st.error(f"Error: {str(e)}")
+        st.write(e)
+        st.error("Something went wrong. Please create new chat.")
 
 # Process user input
 if prompt := st.chat_input("Type your message here..."):
@@ -252,3 +276,6 @@ if "suggested_prompt" in st.session_state and st.session_state["suggested_prompt
     prompt = st.session_state["suggested_prompt"]
     del st.session_state["suggested_prompt"]
     run_llm(prompt)
+
+if "view_dashboard" in st.session_state and st.session_state["view_dashboard"]:
+    dashboard_ui()

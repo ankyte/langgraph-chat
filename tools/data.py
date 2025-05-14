@@ -46,7 +46,7 @@ class DataTransformationInput(BaseModel):
 
 class DataTransformationTool(BaseTool):
     name: str = "data_transformation_tool"
-    description: str = "strictly use when you are asked to perform manipulations on dataframe, user provides port and report date, use them to fetch dataframe"
+    description: str = "strictly use when you are asked to perform manipulations on dataframe, user provides port and report date, dataframes are cached with key dependent of port and report_date"
     args_schema: Optional[ArgsSchema] = DataTransformationInput
     return_direct: bool = True
 
@@ -59,17 +59,13 @@ class DataTransformationTool(BaseTool):
             'port': port,
             'report_date': str(report_date)
         })
-        print(data_id)
         df = state_manager.get(data_id)
-        print(df)
         agent = create_pandas_dataframe_agent(
             ChatOpenAI(temperature=0, model="gpt-4.1-nano"),
             df, verbose=True, 
             allow_dangerous_code=True
         )
         response = agent.run(transformation_prompt)
-        print(response)
-        print('function end')
 
         return response
 
