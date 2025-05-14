@@ -1,9 +1,10 @@
 import streamlit as st
 import uuid
+import asyncio
+from typing import Iterator, Dict, Any
 from chatgraph import Graph
-from typing import Iterator, Dict, List, Tuple, Any
-import uuid
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, AIMessageChunk, ToolMessage
+from util import state_manager
 
 graph = Graph().get()
 
@@ -26,7 +27,7 @@ if "current_chat_id" not in st.session_state:
     st.session_state.current_chat_id = new_chat_id
     st.session_state.chat_sessions[new_chat_id] = {
         "messages": [],
-        "checkpoint_id": None,
+        "checkpoint_id": uuid.uuid4(),
         "title": "New Chat"
     }
 
@@ -52,43 +53,40 @@ def generate_chat_title(message):
         return message[:30] + "..."
     return message
 
-def stream_response(response) -> Iterator[Dict[str, Any]]:
-    full_response = ""
-    checkpoint_id = None
-        
-    for line in response.iter_lines():
-        if line:
-            line_text = line.decode('utf-8')
-            if line_text.startswith("data: "):
-                data_str = line_text[6:]  # Remove "data: " prefix
-                event_type = data.get("type", "")
-                
-                # Handle different event types
-                if event_type == "checkpoint" and "checkpoint_id" in data:
-                    checkpoint_id = data["checkpoint_id"]
-                    
-                elif event_type == "content" and "content" in data:
-                    content = data["content"]
-                    full_response += content
-                    yield {"type": "content", "content": content}
-                    
-                elif event_type == "search_start" and "query" in data:
-                    yield {"type": "search_start", "query": data["query"]}
-                    
-                elif event_type == "search_results" and "urls" in data:
-                    yield {"type": "search_results", "urls": data["urls"]}
-                    
-                elif event_type == "end":
-                    yield {"type": "end"}
-                    break
+# Modified function to handle async streaming
+async def get_streaming_response(prompt, checkpoint_id):
+    config = {
+        "configurable": {
+            "thread_id": checkpoint_id
+        }
+    }
     
-    # Update the checkpoint_id in session state
-    current_chat = st.session_state.chat_sessions[st.session_state.current_chat_id]
-    if checkpoint_id:
-        current_chat["checkpoint_id"] = checkpoint_id
+    async_generator = graph.astream_events({
+        "messages": [HumanMessage(content=prompt)],
+    }, config=config, version="v2")
     
-    # Return the complete response as the final yield
-    yield {"type": "complete", "content": full_response}
+    events = []
+    async for event in async_generator:
+        events.append(event)
+
+    return events
+
+def serialise_ai_message_chunk(chunk):
+    if(isinstance(chunk, AIMessageChunk)):
+        return chunk.content
+    else:
+        raise TypeError(
+            f"Object of type {type(chunk).__name__} is not correctly formatted for serialisation"
+        )
+
+# This function runs the async function and returns the results
+def stream_response(prompt, checkpoint_id):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(get_streaming_response(prompt, checkpoint_id))
+    finally:
+        loop.close()
 
 # Sidebar
 with st.sidebar:
@@ -127,51 +125,6 @@ for message in current_chat["messages"]:
     with st.chat_message(role):
         st.write(content)
 
-async def generate_chat_responses(prompt:str, checkpoint_id: str):
-    is_new_conversation = checkpoint_id is None
-    if is_new_conversation:
-        # Generate new checkpoint ID for first message in conversation
-        new_checkpoint_id = str(uuid.uuid4())
-
-        config = {
-            "configurable": {
-                "thread_id": new_checkpoint_id
-            }
-        }
-        
-        # Initialize with first message
-        events = graph.astream_events(
-            {"messages": [HumanMessage(content=prompt)]},
-            version="v2",
-            config=config
-        )
-        
-        async for event in events:
-            event_type = event["event"]
-            if event_type == "on_chat_model_stream":
-                yield event["data"]["chunk"]
-                
-            elif event_type == "on_chat_model_end":
-                # Check if there are tool calls for search
-                tool_calls = event["data"]["output"].tool_calls if hasattr(event["data"]["output"], "tool_calls") else []
-                search_calls = [call for call in tool_calls if call["name"] == "tavily_search_results_json"]
-                
-                if search_calls:
-                    search_query = search_calls[0]["args"].get("query", "")
-                    yield search_query
-                    
-            elif event_type == "on_tool_end" and event["name"] == "tavily_search_results_json":
-                output = event["data"]["output"] # Search completed - send results or error
-                
-                if isinstance(output, list):
-                    urls = []
-                    for item in output:
-                        if isinstance(item, dict) and "url" in item:
-                            urls.append(item["url"])
-                    
-                    yield urls
-    
-
 # Process user input
 if prompt := st.chat_input("Type your message here..."):
     # Add user message to chat
@@ -185,13 +138,10 @@ if prompt := st.chat_input("Type your message here..."):
     if len(current_chat["messages"]) == 1:
         current_chat["title"] = generate_chat_title(prompt)
     
-    # Prepare the message and checkpoint_id
+    # Get the checkpoint_id
     checkpoint_id = current_chat["checkpoint_id"]
     
     try:
-        # Use async for to iterate over the async generator
-        response = generate_chat_responses(prompt, checkpoint_id)
-
         # Create assistant message container for streaming
         with st.chat_message("assistant"):
             # Initialize variables for response tracking
@@ -201,39 +151,51 @@ if prompt := st.chat_input("Type your message here..."):
             # Process the streaming response
             response_container = st.empty()
             
-            # Stream generator that yields text for writing
-            def content_generator():
-                for event in stream_api_response(url):
-                    if event["type"] == "content":
-                        yield event["content"]
+            # Get and process all events
+            events = stream_response(prompt, checkpoint_id)
             
-            # Stream full response processing with search handling
-            for event in stream_api_response(url):
-                if event["type"] == "content":
+            for event in events:
+                event_type = event["event"]
+                if event_type == "on_chat_model_stream":
                     # Update the full response
-                    full_response += event["content"]
+                    chunk_content = serialise_ai_message_chunk(event["data"]["chunk"])
+                    full_response += chunk_content
                     # Update the displayed response
                     response_container.write(full_response)
                     
-                elif event["type"] == "search_start":
-                    # Create a status indicator for search
-                    search_status = st.status(f"Searching for: {event['query']}", expanded=True)
-                    search_status.update(label=f"Searching for: {event['query']}", state="running")
+                elif event_type == "on_chat_model_end":
+                    # Check if there are tool calls for search
+                    tool_calls = event["data"]["output"].tool_calls if hasattr(event["data"]["output"], "tool_calls") else []
+                    tavily_search_calls = [call for call in tool_calls if call["name"] == "tavily_search_results_json"]
+                    data_tool_calls = [call for call in tool_calls if call["name"] == "data_fetch_tool"]
+
+                    if tavily_search_calls:
+                        search_query = tavily_search_calls[0]["args"].get("query", "")
+                        search_status = st.status(f"Searching for: {search_query}", expanded=True)
+                        search_status.update(label=f"Searching for: {search_query}", state="running")
+                    if data_tool_calls:
+                        data_id = str(repr(data_tool_calls[0]["args"]))
+                        st.data_editor(state_manager.get(data_id), use_container_width=True)
+                        
+                        # Signal that a search is starting
+                        # data_tool_query = data_tool_calls[0]["args"].get("query", "")
+                        # Create a status indicator for search
+                        # search_status = st.status(f"Searching for: {data_tool_query}", expanded=True)
+                        # search_status.update(label=f"Searching for: {search_query}", state="running")
                     
-                elif event["type"] == "search_results" and search_status:
-                    # Display search results in the status
-                    urls_html = "<ul>"
-                    for url in event["urls"]:
-                        urls_html += f"<li><a href='{url}' target='_blank'>{url}</a></li>"
-                    urls_html += "</ul>"
-                    
-                    search_status.update(label="Search completed", state="complete")
-                    search_status.markdown(f"Search results:\n{urls_html}", unsafe_allow_html=True)
-                    
-                elif event["type"] == "complete":
-                    # This event contains the full response
-                    full_response = event["content"]
-            
+                elif event_type == "on_tool_end" and search_status:
+                    output = event["data"]["output"]
+                    if isinstance(output, list):
+                        # Extract URLs from list of search results
+                        urls = []
+                        for item in output:
+                            if isinstance(item, dict) and "url" in item:
+                                urls.append(item["url"])
+                        
+                        search_status.update(label="Search completed", state="complete")
+                        search_status.write(f"Search results:")
+                        search_status(urls)
+                                
             # Add assistant's complete response to chat history
             current_chat["messages"].append({"role": "assistant", "content": full_response})
             
