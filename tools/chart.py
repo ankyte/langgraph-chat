@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 class ChartInput(BaseModel):
     port: str = Field(description="port")
     report_date: datetime.date = Field(description="report_date")
-    chart_type: str = Field(description="chart_type: pie/bar/line")
+    chart_type: str = Field(description="chart_type: pie/bar/line/donut/scatter/histogram/area/heatmap/waterfall")
 
 class ChartTool(BaseTool):
     name: str = "chart_tool"
@@ -52,26 +52,28 @@ def generate_chart(df, chart_type):
     ticker = str(df['Ticker'].iloc[0])
     df = pd.DataFrame(data)
 
+    fig, ax = plt.subplots(figsize=(6, 4))
+
     if chart_type == "bar":
-        fig, ax = plt.subplots()
+        # # fig, ax = plt.subplots()
         ax.bar(df['Category'], df['Values'])
         ax.set_title(ticker)
         st.pyplot(fig)
 
     elif chart_type == "line":
-        fig, ax = plt.subplots()
+        # # fig, ax = plt.subplots()
         ax.plot(df['Category'], df['Values'], marker='o')
         ax.set_title(ticker)
         st.pyplot(fig)
 
     elif chart_type == "pie":
-        fig, ax = plt.subplots()
+        # fig, ax = plt.subplots()
         ax.pie(df['Values'], labels=df['Category'], autopct="%1.1f%%")
         ax.set_title(ticker)
         st.pyplot(fig)
 
     elif chart_type == "donut":
-        fig, ax = plt.subplots()
+        # fig, ax = plt.subplots()
         wedges, texts, autotexts = ax.pie(
             df['Values'],
             labels=df['Category'],
@@ -82,38 +84,38 @@ def generate_chart(df, chart_type):
         st.pyplot(fig)
 
     elif chart_type == "scatter":
-        fig, ax = plt.subplots()
+        # fig, ax = plt.subplots()
         ax.scatter(df['Category'], df['Values'], color='green')
         ax.set_title(ticker)
         st.pyplot(fig)
 
     elif chart_type == "histogram":
-        fig, ax = plt.subplots()
+        # fig, ax = plt.subplots()
         ax.hist(df['Values'], bins=10, color='skyblue', edgecolor='black')
         ax.set_title(ticker)
         st.pyplot(fig)
 
     elif chart_type == "box":
-        fig, ax = plt.subplots()
+        # fig, ax = plt.subplots()
         ax.boxplot(df['Values'])
         ax.set_title(ticker)
         st.pyplot(fig)
 
     elif chart_type == "area":
-        fig, ax = plt.subplots()
+        # fig, ax = plt.subplots()
         ax.fill_between(df['Category'], df['Values'], color='orange', alpha=0.6)
         ax.set_title(ticker)
         st.pyplot(fig)
 
     elif chart_type == "heatmap":
-        fig, ax = plt.subplots()
+        # fig, ax = plt.subplots()
         sns.heatmap(df[['Values']], annot=True, cmap="YlGnBu", ax=ax)
         ax.set_title(ticker)
         st.pyplot(fig)
 
     elif chart_type == "waterfall":
         cumulative_values = df['Values'].cumsum()
-        fig, ax = plt.subplots()
+        # fig, ax = plt.subplots()
         ax.bar(df['Category'], df['Values'])
         ax.plot(df['Category'], cumulative_values, color='red', marker='o', linestyle='--')
         ax.set_title(ticker)
