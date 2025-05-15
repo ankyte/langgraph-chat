@@ -1,12 +1,12 @@
 import streamlit as st
 import uuid
 import asyncio
-from typing import Iterator, Dict, Any
 from chatgraph import Graph
 from langchain_core.messages import HumanMessage, AIMessageChunk, ToolMessage
 from util import state_manager
 from tools.chart import generate_chart
 from st_ui.dashboard import dashboard_ui
+from tools.suggestions import suggest_followups, suggestion_ui_element
 
 graph = Graph().get()
 
@@ -145,15 +145,7 @@ if len(current_chat["messages"]) <= 1:
     # Initial mode — show starter prompts and custom question input
     if st.session_state.input_mode == "initial":
         st.write("💡 Try one of these to get started:")
-        starter_prompts = fetch_dynamic_starter_prompts()
-        cols = st.columns(2)
-        for i, prompt in enumerate(starter_prompts):
-            if cols[i % 2].button(prompt):
-                # current_chat["messages"].append({"role": "user", "content": prompt})
-                st.session_state['suggested_prompt'] = prompt
-                # st.session_state.suggestions = suggest_followups(prompt)
-                st.session_state.input_mode = "chat"
-                st.rerun()
+        suggestion_ui_element(fetch_dynamic_starter_prompts(), 2)
                 
 # Convert stored messages to Streamlit chat message format
 for message in current_chat["messages"]:
@@ -268,14 +260,18 @@ def run_llm(prompt):
         st.write(e)
         st.error("Something went wrong. Please create new chat.")
 
+if "suggested_prompt" in st.session_state and st.session_state["suggested_prompt"]:
+    prompt = st.session_state["suggested_prompt"]
+    run_llm(prompt)
+    del st.session_state["suggested_prompt"]
+
 # Process user input
 if prompt := st.chat_input("Type your message here..."):
     run_llm(prompt)
+    if "suggestion_list" not in st.session_state:
+        st.session_state["suggestion_list"] = suggest_followups(prompt)
+    suggestion_ui_element(st.session_state["suggestion_list"], len(st.session_state["suggestion_list"]))
 
-if "suggested_prompt" in st.session_state and st.session_state["suggested_prompt"]:
-    prompt = st.session_state["suggested_prompt"]
-    del st.session_state["suggested_prompt"]
-    run_llm(prompt)
 
 if "view_dashboard" in st.session_state and st.session_state["view_dashboard"]:
     dashboard_ui()

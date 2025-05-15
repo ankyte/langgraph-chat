@@ -1,3 +1,4 @@
+import streamlit as st
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 
@@ -12,7 +13,7 @@ def suggest_followups(user_query):
     prompt = f"""
     The user asked: "{user_query}"
 
-    Based on this, suggest 3 intelligent follow-up questions related to financial data,
+    Based on this, suggest 3 intelligent follow-up questions related to finance data or user query,
     fund performance, attribution, or risk.
 
     Only return the questions in a bullet list.
@@ -38,10 +39,15 @@ def suggest_followups(user_query):
 
 
 
-
-
-
-
-
-
-
+def suggestion_ui_element(prompts, col_length = 2):
+    cols = st.columns(col_length)
+    for i, prompt in enumerate(prompts):
+        if cols[i % col_length].button(prompt):
+            st.write("prompt clicked")
+            # current_chat["messages"].append({"role": "user", "content": prompt})
+            st.session_state['suggested_prompt'] = prompt
+            st.write("suggested_prompt in session_Staet")
+            st.write(st.session_state['suggested_prompt'])
+            # st.session_state.suggestions = suggest_followups(prompt)
+            st.session_state.input_mode = "chat"
+            st.rerun()

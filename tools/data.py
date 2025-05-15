@@ -61,7 +61,7 @@ class DataTransformationTool(BaseTool):
         })
         df = state_manager.get(data_id)
         agent = create_pandas_dataframe_agent(
-            ChatOpenAI(temperature=0, model="gpt-4.1-nano"),
+            ChatOpenAI(temperature=0, model="gpt-4.1"),
             df, verbose=True, 
             allow_dangerous_code=True
         )
