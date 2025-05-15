@@ -1,13 +1,17 @@
 import streamlit as st
-import requests
+import datetime
 import uuid
-import json
-import time
-from typing import Iterator, Dict, List, Tuple, Any
+import asyncio
+from chatgraph import Graph
+from langchain_core.messages import HumanMessage, AIMessageChunk, SystemMessage
+from util import state_manager
+from tools.chart import generate_chart
+from st_ui.dashboard import dashboard_ui
+from tools.suggestions import suggest_followups
 
+graph = Graph().get()
 APP_NAME = "FolioPilot"
 
-# Set page configuration
 st.set_page_config(
     page_title=APP_NAME,
     page_icon="📈",
@@ -15,23 +19,18 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Initialize session state
 if "chat_sessions" not in st.session_state:
-    st.session_state.chat_sessions = {}  # Store all chat sessions
+    st.session_state.chat_sessions = {}
 
 if "current_chat_id" not in st.session_state:
     new_chat_id = str(uuid.uuid4())
     st.session_state.current_chat_id = new_chat_id
     st.session_state.chat_sessions[new_chat_id] = {
         "messages": [],
-        "checkpoint_id": None,
+        "checkpoint_id": uuid.uuid4(),
         "title": "New Chat"
     }
 
-# API endpoint
-BASE_URL = "http://127.0.0.1:8000"
-
-# Function to create a new chat
 def create_new_chat():
     new_chat_id = str(uuid.uuid4())
     st.session_state.current_chat_id = new_chat_id
@@ -40,175 +39,181 @@ def create_new_chat():
         "checkpoint_id": None,
         "title": "New Chat"
     }
+    st.session_state.input_mode = "initial"
     st.rerun()
 
-# Function to switch to existing chat
 def switch_to_chat(chat_id):
     st.session_state.current_chat_id = chat_id
     st.rerun()
 
-# Function to get chat title from the first user message
 def generate_chat_title(message):
-    if len(message) > 30:
-        return message[:30] + "..."
-    return message
+    return message[:30] + "..." if len(message) > 30 else message
 
-# Function to stream API response
-def stream_api_response(url) -> Iterator[Dict[str, Any]]:
-    """
-    Stream API response and handle different event types.
-    Returns a generator that yields content chunks and event metadata.
-    """
-    full_response = ""
-    checkpoint_id = None
-    
-    with requests.get(url, stream=True) as response:
-        response.raise_for_status()
-        
-        for line in response.iter_lines():
-            if line:
-                line_text = line.decode('utf-8')
-                if line_text.startswith("data: "):
-                    data_str = line_text[6:]  # Remove "data: " prefix
-                    try:
-                        data = json.loads(data_str)
-                        event_type = data.get("type", "")
-                        
-                        # Handle different event types
-                        if event_type == "checkpoint" and "checkpoint_id" in data:
-                            checkpoint_id = data["checkpoint_id"]
-                            
-                        elif event_type == "content" and "content" in data:
-                            content = data["content"]
-                            full_response += content
-                            yield {"type": "content", "content": content}
-                            
-                        elif event_type == "search_start" and "query" in data:
-                            yield {"type": "search_start", "query": data["query"]}
-                            
-                        elif event_type == "search_results" and "urls" in data:
-                            yield {"type": "search_results", "urls": data["urls"]}
-                            
-                        elif event_type == "end":
-                            yield {"type": "end"}
-                            break
-                            
-                    except json.JSONDecodeError:
-                        pass
-    
-    # Update the checkpoint_id in session state
+async def get_streaming_response(prompt, checkpoint_id):
+    if len(current_chat["messages"]) <= 1:
+        initial_state = {
+            "messages": [SystemMessage(content=f"You are a finance bot. Today is {str(datetime.datetime.now())}")]
+        }
+        config = {"configurable": {"thread_id": checkpoint_id}}
+        response = await graph.ainvoke(initial_state, config=config)
+
+    config = {"configurable": {"thread_id": checkpoint_id}}
+    async_generator = graph.astream_events({
+        "messages": [HumanMessage(content=prompt)],
+    }, config=config, version="v2")
+
+    events = []
+    async for event in async_generator:
+        events.append(event)
+    return events
+
+def serialise_ai_message_chunk(chunk):
+    if isinstance(chunk, AIMessageChunk):
+        return chunk.content
+    else:
+        raise TypeError(f"Object of type {type(chunk).__name__} is not AIMessageChunk")
+
+def stream_response(prompt, checkpoint_id):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(get_streaming_response(prompt, checkpoint_id))
+    finally:
+        loop.close()
+
+def run_llm(prompt):
     current_chat = st.session_state.chat_sessions[st.session_state.current_chat_id]
-    if checkpoint_id:
-        current_chat["checkpoint_id"] = checkpoint_id
-    
-    # Return the complete response as the final yield
-    yield {"type": "complete", "content": full_response}
+    current_chat["messages"].append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.write(prompt)
+
+    if len(current_chat["messages"]) == 1:
+        current_chat["title"] = generate_chat_title(prompt)
+
+    checkpoint_id = current_chat["checkpoint_id"]
+    try:
+        with st.chat_message("assistant"):
+            full_response = ""
+            search_status = None
+            response_container = st.empty()
+            events = stream_response(prompt, checkpoint_id)
+            dfs = []
+
+            for event in events:
+                event_type = event["event"]
+
+                if event_type == "on_chat_model_stream":
+                    chunk_content = serialise_ai_message_chunk(event["data"]["chunk"])
+                    full_response += chunk_content
+                    response_container.write(full_response)
+
+                elif event_type == "on_chat_model_end":
+                    tool_calls = event["data"]["output"].tool_calls if hasattr(event["data"]["output"], "tool_calls") else []
+                    for call in tool_calls:
+                        name = call["name"]
+                        args = call["args"]
+                        if name == "data_fetch_tool":
+                            df = state_manager.get(str(repr(args)))
+                            dfs.append(df)
+                            st.data_editor(df, use_container_width=True, key=uuid.uuid4())
+                        elif name == "chart_tool":
+                            df = state_manager.get(str(repr({
+                                "port": args["port"],
+                                "report_date": args["report_date"]
+                            })))
+                            generate_chart(df, args['chart_type'])
+                        elif name == "dashboard_tool":
+                            st.session_state["dashboard_portfolio"] = args["port"]
+                            st.session_state["view_dashboard"] = st.button(f"Dashboard {args['port']}")
+                        elif name == "report_tool":
+                            with open("report.pdf", "rb") as pdf_file:
+                                PDFbyte = pdf_file.read()
+
+                            st.download_button(label=f"Download Report for {args['port']}",
+                                data=PDFbyte,
+                                file_name=f"{args['port']}_report.pdf",
+                                mime='application/octet-stream'
+                            )
+
+                        elif name == "tavily_search_results_json":
+                            search_query = args.get("query", "")
+                            search_status = st.status(f"Searching for: {search_query}", expanded=True)
+                            search_status.update(label=f"Searching for: {search_query}", state="running")
+
+                elif event_type == "on_tool_end" and search_status:
+                    output = event["data"]["output"]
+                    if isinstance(output, list):
+                        search_status.update(label="Search completed", state="complete")
+
+            current_chat["messages"].append({
+                "role": "assistant", "content": full_response, "dataframes": dfs
+            })
+
+    except Exception as e:
+        st.error("Something went wrong: " + str(e))
 
 # Sidebar
 with st.sidebar:
     st.title(APP_NAME)
-    
-    # New chat button
     if st.button("➕", use_container_width=True):
         create_new_chat()
-    
     st.divider()
     st.subheader("Previous chats")
-    
-    # Display chat history
     for chat_id, chat_data in reversed(list(st.session_state.chat_sessions.items())):
-        if chat_id == st.session_state.current_chat_id:
-            button_type = "primary"
-        else:
-            button_type = "secondary"
-        
-        # Create a button for each chat session
-        if st.button(chat_data["title"], key=f"chat_{chat_id}", 
-                    use_container_width=True, type=button_type):
+        if st.button(chat_data["title"], key=f"chat_{chat_id}", use_container_width=True):
             switch_to_chat(chat_id)
 
-# Main chat area
+# Chat UI
 current_chat = st.session_state.chat_sessions[st.session_state.current_chat_id]
-
-# Display chat title
 st.header(current_chat["title"])
 
-# Convert stored messages to Streamlit chat message format
-for message in current_chat["messages"]:
-    role = message["role"]
-    content = message["content"]
-    
-    with st.chat_message(role):
-        st.write(content)
+if "suggestions" not in st.session_state:
+    st.session_state.suggestions = []
+if "input_mode" not in st.session_state:
+    st.session_state.input_mode = "initial"
 
-# Process user input
+if len(current_chat["messages"]) <= 1:
+    st.write("Ask anything about your portfolio")
+
+    def fetch_dynamic_starter_prompts():
+        return [
+            "Show me the performance data of SEL-AGG.",
+            "What are the risk metrics of this fund?",
+            "Can you explain the fund attribution?",
+            "Compare returns of two funds over 5 years.",
+            "How has this fund performed vs the benchmark?"
+        ]
+
+    if st.session_state.input_mode == "initial":
+        st.write("💡 Try one of these to get started:")
+        prompts = fetch_dynamic_starter_prompts()
+        for i, prompt in enumerate(prompts):
+            if st.button(prompt, key=f"starter_prompt_{i}"):
+                run_llm(prompt)
+                st.session_state.suggestions = suggest_followups(prompt)
+                st.session_state.input_mode = "chat"
+                st.rerun()
+
+for message in current_chat["messages"]:
+    with st.chat_message(message["role"]):
+        st.write(message["content"])
+        for df in message.get("dataframes", []):
+            st.data_editor(df, key=uuid.uuid4())
+
+# Manual chat input
 if prompt := st.chat_input("Type your message here..."):
-    # Add user message to chat
-    current_chat["messages"].append({"role": "user", "content": prompt})
-    
-    # Display user message
-    with st.chat_message("user"):
-        st.write(prompt)
-    
-    # If this is the first message, update the chat title
-    if len(current_chat["messages"]) == 1:
-        current_chat["title"] = generate_chat_title(prompt)
-    
-    # Prepare the message and checkpoint_id
-    checkpoint_id = current_chat["checkpoint_id"]
-    encoded_message = prompt.replace(" ", "%20")
-    
-    try:
-        # Construct the API URL with parameters
-        if checkpoint_id:
-            url = f"{BASE_URL}/chat_stream/{encoded_message}?checkpoint_id={checkpoint_id}"
-        else:
-            url = f"{BASE_URL}/chat_stream/{encoded_message}"
-        
-        # Create assistant message container for streaming
-        with st.chat_message("assistant"):
-            # Initialize variables for response tracking
-            full_response = ""
-            search_status = None
-            
-            # Process the streaming response
-            response_container = st.empty()
-            
-            # Stream generator that yields text for writing
-            def content_generator():
-                for event in stream_api_response(url):
-                    if event["type"] == "content":
-                        yield event["content"]
-            
-            # Stream full response processing with search handling
-            for event in stream_api_response(url):
-                if event["type"] == "content":
-                    # Update the full response
-                    full_response += event["content"]
-                    # Update the displayed response
-                    response_container.write(full_response)
-                    
-                elif event["type"] == "search_start":
-                    # Create a status indicator for search
-                    search_status = st.status(f"Searching for: {event['query']}", expanded=True)
-                    search_status.update(label=f"Searching for: {event['query']}", state="running")
-                    
-                elif event["type"] == "search_results" and search_status:
-                    # Display search results in the status
-                    urls_html = "<ul>"
-                    for url in event["urls"]:
-                        urls_html += f"<li><a href='{url}' target='_blank'>{url}</a></li>"
-                    urls_html += "</ul>"
-                    
-                    search_status.update(label="Search completed", state="complete")
-                    search_status.markdown(f"Search results:\n{urls_html}", unsafe_allow_html=True)
-                    
-                elif event["type"] == "complete":
-                    # This event contains the full response
-                    full_response = event["content"]
-            
-            # Add assistant's complete response to chat history
-            current_chat["messages"].append({"role": "assistant", "content": full_response})
-            
-    except Exception as e:
-        st.error(f"Error: {str(e)}")
+    run_llm(prompt)
+    st.session_state.suggestions = suggest_followups(prompt)
+
+# Show follow-up suggestions
+if st.session_state.get("suggestions"):
+    st.write("💬 Suggested follow-ups:")
+    for i, q in enumerate(st.session_state.suggestions):
+        if st.button(q, key=f"followup_{i}"):
+            run_llm(q)
+            st.session_state.suggestions = suggest_followups(q)
+            st.rerun()
+
+# Optional dashboard UI
+if "view_dashboard" in st.session_state and st.session_state["view_dashboard"]:
+    dashboard_ui()
