@@ -11,7 +11,7 @@ def generate_random_four_word_string():
     word_list = [
         "Short", "Master", "Class", "valuable", "Equity", "Ideal", "Fund", "hedge", "growth"
     ]
-    return ' '.join(random.sample(word_list, 4))
+    return ' '.join(random.sample(word_list, 2))
 
 
 ## This function is to generate random integer between 7 to 9 digits
@@ -70,7 +70,7 @@ def generate_alphanumeric_code(prefix):
 def get_trades_data(port: str, report_date: datetime.date, time_period: int) -> pd.DataFrame:
 
     trade_data = pd.DataFrame(columns = ['Trade Date','CUSIP','ISIN','Bloomberg','Net Money'
-                                         ,'Ticker',	'Tran Type'	,'Sec Desc','Quantity'	,'Trade Type',	'Td Num'])
+                                         ,'Ticker','Sec Desc'])
 
     #generating the date list for the trades date column
     date_list =  last_business_days(report_date, time_period)
@@ -97,19 +97,19 @@ def get_trades_data(port: str, report_date: datetime.date, time_period: int) -> 
 
     trade_data['Ticker'] = [port for i in range(trade_data.shape[0])]
 
-    ## poupulating the Tran Type Column
+    # ## poupulating the Tran Type Column
 
-    trade_data['Tran Type'] = [random.choice(["BUY", "SELL"]) for i in range(trade_data.shape[0])]
+    # trade_data['Tran Type'] = [random.choice(["BUY", "SELL"]) for i in range(trade_data.shape[0])]
 
-    ## Trade Number column
-    trade_data['Td Num'] = [random.randint(1000, 9999) for i in range(trade_data.shape[0])]
+    # ## Trade Number column
+    # trade_data['Td Num'] = [random.randint(1000, 9999) for i in range(trade_data.shape[0])]
 
-    ## Quantity
-    trade_data['Quantity'] = [generate_quantity() for i in range(trade_data.shape[0])]
+    # ## Quantity
+    # trade_data['Quantity'] = [generate_quantity() for i in range(trade_data.shape[0])]
 
-    ## Trade type - Long Term/ Short Term
+    # ## Trade type - Long Term/ Short Term
 
-    trade_data['Trade Type'] = [random.choice(["LONG TERM", "SHORT TERM"]) for i in range(trade_data.shape[0])]
+    # trade_data['Trade Type'] = [random.choice(["LONG TERM", "SHORT TERM"]) for i in range(trade_data.shape[0])]
 
     ## Security Description
     

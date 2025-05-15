@@ -1,12 +1,13 @@
 import streamlit as st
+import datetime
 import uuid
 import asyncio
 from chatgraph import Graph
-from langchain_core.messages import HumanMessage, AIMessageChunk
+from langchain_core.messages import HumanMessage, AIMessageChunk, SystemMessage
 from util import state_manager
 from tools.chart import generate_chart
 from st_ui.dashboard import dashboard_ui
-from tools.suggestions import suggest_followups, suggestion_ui_element
+from tools.suggestions import suggest_followups
 
 graph = Graph().get()
 APP_NAME = "FolioPilot"
@@ -49,6 +50,13 @@ def generate_chat_title(message):
     return message[:30] + "..." if len(message) > 30 else message
 
 async def get_streaming_response(prompt, checkpoint_id):
+    if len(current_chat["messages"]) <= 1:
+        initial_state = {
+            "messages": [SystemMessage(content=f"You are a finance bot. Today is {str(datetime.datetime.now())}")]
+        }
+        config = {"configurable": {"thread_id": checkpoint_id}}
+        response = await graph.ainvoke(initial_state, config=config)
+
     config = {"configurable": {"thread_id": checkpoint_id}}
     async_generator = graph.astream_events({
         "messages": [HumanMessage(content=prompt)],
@@ -118,7 +126,15 @@ def run_llm(prompt):
                             st.session_state["dashboard_portfolio"] = args["port"]
                             st.session_state["view_dashboard"] = st.button(f"Dashboard {args['port']}")
                         elif name == "report_tool":
-                            st.button(f"Download PDF report for {args['port']}")
+                            with open("report.pdf", "rb") as pdf_file:
+                                PDFbyte = pdf_file.read()
+
+                            st.download_button(label=f"Download Report for {args['port']}",
+                                data=PDFbyte,
+                                file_name=f"{args['port']}_report.pdf",
+                                mime='application/octet-stream'
+                            )
+
                         elif name == "tavily_search_results_json":
                             search_query = args.get("query", "")
                             search_status = st.status(f"Searching for: {search_query}", expanded=True)

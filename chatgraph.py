@@ -106,7 +106,7 @@ async def tool_node(state):
             tool_messages.append(tool_message)
 
         if tool_name == "report_tool":
-            response = await dashboard_tool.ainvoke(tool_args)
+            response = await report_tool.ainvoke(tool_args)
             tool_message = ToolMessage(
                 content = response,
                 tool_call_id=tool_id,
