@@ -5,7 +5,6 @@ from langchain_openai import ChatOpenAI
 # Load environment variables
 load_dotenv()
 
-
 def suggest_followups(user_query):
     """
     Use Together API-compatible GPT model to suggest follow-up questions for a financial chatbot.
@@ -19,7 +18,7 @@ def suggest_followups(user_query):
     Only return the questions in a bullet list.
     """
     llm = ChatOpenAI(
-        model = "gpt-4.1-nano",
+        model="gpt-4.1-nano",
         temperature=0.7,
         max_tokens=100
     )
@@ -37,17 +36,13 @@ def suggest_followups(user_query):
     return follow_up_questions
 
 
-
-
-def suggestion_ui_element(prompts, col_length = 2):
+def suggestion_ui_element(prompts, col_length=2, run_llm=None):
     cols = st.columns(col_length)
     for i, prompt in enumerate(prompts):
         if cols[i % col_length].button(prompt):
-            st.write("prompt clicked")
-            # current_chat["messages"].append({"role": "user", "content": prompt})
-            st.session_state['suggested_prompt'] = prompt
-            st.write("suggested_prompt in session_Staet")
-            st.write(st.session_state['suggested_prompt'])
-            # st.session_state.suggestions = suggest_followups(prompt)
-            st.session_state.input_mode = "chat"
-            st.rerun()
+            if run_llm:
+                run_llm(prompt)
+            else:
+                st.session_state['suggested_prompt'] = prompt
+                st.session_state.input_mode = "chat"
+                st.rerun()

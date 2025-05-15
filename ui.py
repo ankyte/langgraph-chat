@@ -2,17 +2,15 @@ import streamlit as st
 import uuid
 import asyncio
 from chatgraph import Graph
-from langchain_core.messages import HumanMessage, AIMessageChunk, ToolMessage
+from langchain_core.messages import HumanMessage, AIMessageChunk
 from util import state_manager
 from tools.chart import generate_chart
 from st_ui.dashboard import dashboard_ui
 from tools.suggestions import suggest_followups, suggestion_ui_element
 
 graph = Graph().get()
-
 APP_NAME = "FolioPilot"
 
-# Set page configuration
 st.set_page_config(
     page_title=APP_NAME,
     page_icon="📈",
@@ -20,9 +18,8 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Initialize session state
 if "chat_sessions" not in st.session_state:
-    st.session_state.chat_sessions = {}  # Store all chat sessions
+    st.session_state.chat_sessions = {}
 
 if "current_chat_id" not in st.session_state:
     new_chat_id = str(uuid.uuid4())
@@ -33,7 +30,6 @@ if "current_chat_id" not in st.session_state:
         "title": "New Chat"
     }
 
-# Function to create a new chat
 def create_new_chat():
     new_chat_id = str(uuid.uuid4())
     st.session_state.current_chat_id = new_chat_id
@@ -45,44 +41,30 @@ def create_new_chat():
     st.session_state.input_mode = "initial"
     st.rerun()
 
-# Function to switch to existing chat
 def switch_to_chat(chat_id):
     st.session_state.current_chat_id = chat_id
     st.rerun()
 
-# Function to get chat title from the first user message
 def generate_chat_title(message):
-    if len(message) > 30:
-        return message[:30] + "..."
-    return message
+    return message[:30] + "..." if len(message) > 30 else message
 
-# Modified function to handle async streaming
 async def get_streaming_response(prompt, checkpoint_id):
-    config = {
-        "configurable": {
-            "thread_id": checkpoint_id
-        }
-    }
-    
+    config = {"configurable": {"thread_id": checkpoint_id}}
     async_generator = graph.astream_events({
         "messages": [HumanMessage(content=prompt)],
     }, config=config, version="v2")
-    
+
     events = []
     async for event in async_generator:
         events.append(event)
-
     return events
 
 def serialise_ai_message_chunk(chunk):
-    if(isinstance(chunk, AIMessageChunk)):
+    if isinstance(chunk, AIMessageChunk):
         return chunk.content
     else:
-        raise TypeError(
-            f"Object of type {type(chunk).__name__} is not correctly formatted for serialisation"
-        )
+        raise TypeError(f"Object of type {type(chunk).__name__} is not AIMessageChunk")
 
-# This function runs the async function and returns the results
 def stream_response(prompt, checkpoint_id):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -91,48 +73,92 @@ def stream_response(prompt, checkpoint_id):
     finally:
         loop.close()
 
+def run_llm(prompt):
+    current_chat = st.session_state.chat_sessions[st.session_state.current_chat_id]
+    current_chat["messages"].append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.write(prompt)
+
+    if len(current_chat["messages"]) == 1:
+        current_chat["title"] = generate_chat_title(prompt)
+
+    checkpoint_id = current_chat["checkpoint_id"]
+    try:
+        with st.chat_message("assistant"):
+            full_response = ""
+            search_status = None
+            response_container = st.empty()
+            events = stream_response(prompt, checkpoint_id)
+            dfs = []
+
+            for event in events:
+                event_type = event["event"]
+
+                if event_type == "on_chat_model_stream":
+                    chunk_content = serialise_ai_message_chunk(event["data"]["chunk"])
+                    full_response += chunk_content
+                    response_container.write(full_response)
+
+                elif event_type == "on_chat_model_end":
+                    tool_calls = event["data"]["output"].tool_calls if hasattr(event["data"]["output"], "tool_calls") else []
+                    for call in tool_calls:
+                        name = call["name"]
+                        args = call["args"]
+                        if name == "data_fetch_tool":
+                            df = state_manager.get(str(repr(args)))
+                            dfs.append(df)
+                            st.data_editor(df, use_container_width=True, key=uuid.uuid4())
+                        elif name == "chart_tool":
+                            df = state_manager.get(str(repr({
+                                "port": args["port"],
+                                "report_date": args["report_date"]
+                            })))
+                            generate_chart(df, args['chart_type'])
+                        elif name == "dashboard_tool":
+                            st.session_state["dashboard_portfolio"] = args["port"]
+                            st.session_state["view_dashboard"] = st.button(f"Dashboard {args['port']}")
+                        elif name == "report_tool":
+                            st.button(f"Download PDF report for {args['port']}")
+                        elif name == "tavily_search_results_json":
+                            search_query = args.get("query", "")
+                            search_status = st.status(f"Searching for: {search_query}", expanded=True)
+                            search_status.update(label=f"Searching for: {search_query}", state="running")
+
+                elif event_type == "on_tool_end" and search_status:
+                    output = event["data"]["output"]
+                    if isinstance(output, list):
+                        search_status.update(label="Search completed", state="complete")
+
+            current_chat["messages"].append({
+                "role": "assistant", "content": full_response, "dataframes": dfs
+            })
+
+    except Exception as e:
+        st.error("Something went wrong: " + str(e))
+
 # Sidebar
 with st.sidebar:
     st.title(APP_NAME)
-    
-    # New chat button
     if st.button("➕", use_container_width=True):
         create_new_chat()
-    
     st.divider()
     st.subheader("Previous chats")
-    
-    # Display chat history
     for chat_id, chat_data in reversed(list(st.session_state.chat_sessions.items())):
-        if chat_id == st.session_state.current_chat_id:
-            button_type = "primary"
-        else:
-            button_type = "secondary"
-        
-        # Create a button for each chat session
-        if st.button(chat_data["title"], key=f"chat_{chat_id}", 
-                    use_container_width=True, type=button_type):
+        if st.button(chat_data["title"], key=f"chat_{chat_id}", use_container_width=True):
             switch_to_chat(chat_id)
 
-# Main chat area
+# Chat UI
 current_chat = st.session_state.chat_sessions[st.session_state.current_chat_id]
-
-# Display chat title
 st.header(current_chat["title"])
 
+if "suggestions" not in st.session_state:
+    st.session_state.suggestions = []
+if "input_mode" not in st.session_state:
+    st.session_state.input_mode = "initial"
+
 if len(current_chat["messages"]) <= 1:
-    # Session state initialization
-    if "suggestions" not in st.session_state:
-        st.session_state.suggestions = []
-    if "input_mode" not in st.session_state:
-        st.session_state.input_mode = "initial"
-    if "followup_click_count" not in st.session_state:
-        st.session_state.followup_click_count = 0
+    st.write("Ask anything about your portfolio")
 
-    st.write("Ask anything and everything about your portfolio")
-
-
-    # Function to fetch dynamic starter prompts
     def fetch_dynamic_starter_prompts():
         return [
             "Show me the performance data of SEL-AGG.",
@@ -142,136 +168,36 @@ if len(current_chat["messages"]) <= 1:
             "How has this fund performed vs the benchmark?"
         ]
 
-    # Initial mode — show starter prompts and custom question input
     if st.session_state.input_mode == "initial":
         st.write("💡 Try one of these to get started:")
-        suggestion_ui_element(fetch_dynamic_starter_prompts(), 2)
-                
-# Convert stored messages to Streamlit chat message format
+        prompts = fetch_dynamic_starter_prompts()
+        for i, prompt in enumerate(prompts):
+            if st.button(prompt, key=f"starter_prompt_{i}"):
+                run_llm(prompt)
+                st.session_state.suggestions = suggest_followups(prompt)
+                st.session_state.input_mode = "chat"
+                st.rerun()
+
 for message in current_chat["messages"]:
-    role = message["role"]
-    content = message["content"]
-    dataframes = message.get("dataframes", [])
-    
-    with st.chat_message(role):
-        st.write(content)
-        for df in dataframes:
+    with st.chat_message(message["role"]):
+        st.write(message["content"])
+        for df in message.get("dataframes", []):
             st.data_editor(df, key=uuid.uuid4())
 
-def run_llm(prompt):
-    # Add user message to chat
-    current_chat["messages"].append({"role": "user", "content": prompt})
-    
-    # Display user message
-    with st.chat_message("user"):
-        st.write(prompt)
-    
-    # If this is the first message, update the chat title
-    if len(current_chat["messages"]) == 1:
-        current_chat["title"] = generate_chat_title(prompt)
-    
-    # Get the checkpoint_id
-    checkpoint_id = current_chat["checkpoint_id"]
-    
-    try:
-        # Create assistant message container for streaming
-        with st.chat_message("assistant"):
-            # Initialize variables for response tracking
-            full_response = ""
-            search_status = None
-            
-            # Process the streaming response
-            response_container = st.empty()
-            
-            # Get and process all events
-            events = stream_response(prompt, checkpoint_id)
-            dfs = list()
-            for event in events:
-                event_type = event["event"]
-
-                # if 'dfs' not in st.session_state:
-                #     st.session_state.dfs = dict()
-                
-
-                if event_type == "on_chat_model_stream":
-                    # Update the full response
-                    chunk_content = serialise_ai_message_chunk(event["data"]["chunk"])
-                    full_response += chunk_content
-                    # Update the displayed response
-                    response_container.write(full_response)
-                    
-                elif event_type == "on_chat_model_end":
-                    # Check if there are tool calls for search
-                    tool_calls = event["data"]["output"].tool_calls if hasattr(event["data"]["output"], "tool_calls") else []
-                    tavily_search_calls = [call for call in tool_calls if call["name"] == "tavily_search_results_json"]
-                    data_tool_calls = [call for call in tool_calls if call["name"] == "data_fetch_tool"]
-                    chart_tool_output = [call for call in tool_calls if call["name"] == "chart_tool"]
-                    dashboard_tool_output = [call for call in tool_calls if call["name"] == "dashboard_tool"]
-                    report_tool_output = [call for call in tool_calls if call["name"] == "report_tool"]
-
-                    if tavily_search_calls:
-                        search_query = tavily_search_calls[0]["args"].get("query", "")
-                        search_status = st.status(f"Searching for: {search_query}", expanded=True)
-                        search_status.update(label=f"Searching for: {search_query}", state="running")
-                    elif data_tool_calls:
-                        data_id = str(repr(data_tool_calls[0]["args"]))
-                        df = state_manager.get(data_id)
-                        # st.session_state.dfs[data_id] = df
-                        dfs.append(df)
-                        st.data_editor(df, use_container_width=True, key=uuid.uuid4())
-                    elif chart_tool_output:
-                        response = chart_tool_output[0]["args"]
-                        data_id = str(repr({
-                            "port": response["port"],
-                            "report_date": response["report_date"]
-                        }))
-
-                        df = state_manager.get(data_id)
-                        generate_chart(df, response['chart_type'])
-
-                    elif dashboard_tool_output:
-                        response = dashboard_tool_output[0]["args"]
-                        port = response["port"]
-                        st.session_state["dashboard_portfolio"] = port
-                        st.session_state['view_dashboard'] = st.button(f"Dashboard {port}")
-                        
-                    elif report_tool_output:
-                        response = report_tool_output[0]["args"]
-                        port = response["port"]
-                        st.session_state["report_tool_portfolio"] = port
-                        st.button(f"Download pdf report for {port}")
-                    
-                elif event_type == "on_tool_end" and search_status:
-                    output = event["data"]["output"]
-                    if isinstance(output, list):
-                        # Extract URLs from list of search results
-                        urls = []
-                        for item in output:
-                            if isinstance(item, dict) and "url" in item:
-                                urls.append(item["url"])
-                        
-                        search_status.update(label="Search completed", state="complete")
-                        # search_status(urls)
-                                
-            # Add assistant's complete response to chat history
-            current_chat["messages"].append({"role": "assistant", "content": full_response, "dataframes": dfs})
-            
-    except Exception as e:
-        st.write(e)
-        st.error("Something went wrong. Please create new chat.")
-
-if "suggested_prompt" in st.session_state and st.session_state["suggested_prompt"]:
-    prompt = st.session_state["suggested_prompt"]
-    run_llm(prompt)
-    del st.session_state["suggested_prompt"]
-
-# Process user input
+# Manual chat input
 if prompt := st.chat_input("Type your message here..."):
     run_llm(prompt)
-    if "suggestion_list" not in st.session_state:
-        st.session_state["suggestion_list"] = suggest_followups(prompt)
-    suggestion_ui_element(st.session_state["suggestion_list"], len(st.session_state["suggestion_list"]))
+    st.session_state.suggestions = suggest_followups(prompt)
 
+# Show follow-up suggestions
+if st.session_state.get("suggestions"):
+    st.write("💬 Suggested follow-ups:")
+    for i, q in enumerate(st.session_state.suggestions):
+        if st.button(q, key=f"followup_{i}"):
+            run_llm(q)
+            st.session_state.suggestions = suggest_followups(q)
+            st.rerun()
 
+# Optional dashboard UI
 if "view_dashboard" in st.session_state and st.session_state["view_dashboard"]:
     dashboard_ui()
